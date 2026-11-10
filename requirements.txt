@@ -1,0 +1,11 @@
+mutagen
+
+# The embedding, clustering, and visualization scripts run in Linux/WSL.
+chromadb; sys_platform == "linux"
+essentia-tensorflow; sys_platform == "linux"
+hdbscan; sys_platform == "linux"
+joblib; sys_platform == "linux"
+numpy; sys_platform == "linux"
+pandas; sys_platform == "linux"
+plotly; sys_platform == "linux"
+umap-learn; sys_platform == "linux"

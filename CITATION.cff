@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+
+message: "If you use parts or the whole code published in this repository, please cite it as below."
+
+type: software
+
+authors:
+  - family-names: Baldini
+    given-names: Dario
+    email: baldini.dario98@gmail.com
+    website: https://www.linkedin.com/in/dario-baldini-19218b268/
+
+title: "Music Clustering"
+
+version: "1.0.0"
+
+date-released: 2026-11-10
+
+repository-code: "https://github.com/dariobaldini98/music_clustering"

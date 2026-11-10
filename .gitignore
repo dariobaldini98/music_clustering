@@ -1,0 +1,29 @@
+# Virtual environment
+venv/
+**/venv/
+.venv/
+**/.venv/
+
+# Python bytecode caches
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Directory containing audio files
+songs/
+**/songs/
+
+# The Discogs-EffNet model file
+discogs-effnet-bs64-1.pb
+
+# Generated ChromaDB vector index
+chroma_db/
+**/chroma_db/
+
+#Clustering model and results
+clustering_results/
+**/clustering_results/
+
+#Visualisation results
+visualisation_results/
+**/visualisation_results/
