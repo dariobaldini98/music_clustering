@@ -17,8 +17,8 @@ songs/
 discogs-effnet-bs64-1.pb
 
 # Generated ChromaDB vector index
-chroma_db/
-**/chroma_db/
+chroma/
+**/chroma/
 
 #Clustering model and results
 clustering_results/
