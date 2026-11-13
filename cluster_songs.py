@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Topic-modelling-style clustering of the song embeddings, without BERTopic.
+Topic-modelling-style clustering of the song embeddings
 
-It runs the same two steps BERTopic runs internally, each used directly:
-    embeddings --UMAP (UMAP_N_COMPONENTS dims)--> reduced vectors --HDBSCAN--> clusters ("topics")
-Cluster -1 means "outlier", exactly like topic -1 in BERTopic.
+It runs the these two steps, each used directly:
+    embeddings --UMAP (UMAP_N_COMPONENTS dims)--> reduced vectors --HDBSCAN--> clusters
+Cluster -1 means "outlier".
 
-BERTopic's other parts need text documents (CountVectorizer, stop words, MMR), which songs
-do not have. Their counterpart here is a class-based TF-IDF over ARTISTS: for each cluster it
+The clusters' representation part here is a class-based TF-IDF over ARTISTS: for each cluster it
 finds the artists that are most distinctive of it, plus representative songs and simple stats.
 
 Run it in the Ubuntu venv:
@@ -53,14 +52,14 @@ CLUSTERING_RESULTS_DIR = Path(
 # of the EffNet patches, which live on very different scales).
 STANDARDIZE = True
 
-# UMAP: your BERTopic settings
-UMAP_N_NEIGHBORS = 15
+# UMAP
+UMAP_N_NEIGHBORS = 25
 UMAP_N_COMPONENTS = 10
 UMAP_MIN_DIST = 0.0
 UMAP_METRIC = "cosine"
 
-# HDBSCAN: your BERTopic settings
-HDBSCAN_MIN_CLUSTER_SIZE = 8
+# HDBSCAN
+HDBSCAN_MIN_CLUSTER_SIZE = 12
 HDBSCAN_MIN_SAMPLES = 3
 HDBSCAN_EPSILON = 0.0
 HDBSCAN_METRIC = "euclidean"
@@ -138,7 +137,7 @@ def reduce_with_umap(embeddings):
 
 
 def make_clusterer():
-    """Return HDBSCAN instance with your BERTopic settings (no number of clusters is given)."""
+    """Return HDBSCAN instance (no number of clusters is given)."""
     return hdbscan.HDBSCAN(
         min_cluster_size=HDBSCAN_MIN_CLUSTER_SIZE,
         min_samples=HDBSCAN_MIN_SAMPLES,
@@ -169,7 +168,7 @@ def artist_list(meta):
 
 
 def class_tfidf_artists(labels, artist_lists):
-    """BERTopic's c-TF-IDF with artists as the terms and clusters as the 'documents'.
+    """c-TF-IDF with artists as the terms and clusters as the 'documents'.
 
     Returns (class labels, artist names, score matrix, count matrix), rows = clusters.
     """
@@ -184,7 +183,7 @@ def class_tfidf_artists(labels, artist_lists):
 
     X = counts.to_numpy(float)
     df = X.sum(axis=0)                           # artist frequency across all clusters
-    avg_per_class = int(X.sum(axis=1).mean())    # average "words" per cluster, as in BERTopic
+    avg_per_class = int(X.sum(axis=1).mean())    # average "words" per cluster
     idf = np.log(avg_per_class / df + 1)
     idf = np.maximum(idf, 0)
 
