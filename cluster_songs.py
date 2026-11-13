@@ -472,6 +472,10 @@ def main():
         if row.representative_songs:
             print(f"  representative songs: {row.representative_songs}")
 
+    if not confirm_chroma_write():
+        return
+
+    # The 3D layout is the slow part, so it only runs once the clustering is approved.
     map_embeddings = embeddings
     if not STANDARDIZE:
         map_embeddings, _, _ = standardize(raw_embeddings)
@@ -483,10 +487,9 @@ def main():
         names,
         layout_3d(map_embeddings),
     )
-    if not confirm_chroma_write():
-        return
 
     write_clusters_to_chroma(col, ids, labels, probabilities, names, map_df)
+
     records = build_cluster_records(
         raw_embeddings, metas, labels, probabilities, names, summary
     )
