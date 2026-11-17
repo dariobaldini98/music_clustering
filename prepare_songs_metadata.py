@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build or resume metadata for local audio files in songs_metadata.json.
+"""Append metadata for new local audio files to songs_metadata.json.
 
 The script scans the audio folder, reads each file's embedded title, artist, album,
 and duration tags, and enriches those fields through MusicBrainz. It does not
-download audio. Existing records are reused, while incomplete or failed
-MusicBrainz enrichment is retried.
+download audio. Existing complete output records are left unchanged; only audio files not
+already represented in the output, or without Musicbrainz metadata, are enriched and appended.
 
 Requires: mutagen
 Install: pip install mutagen
@@ -12,15 +12,13 @@ Install: pip install mutagen
 
 from __future__ import annotations
 
-import argparse
 import json
-import os
 import re
 import signal
 import sys
 import time
 import unicodedata
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PureWindowsPath
@@ -38,8 +36,7 @@ RETRY_BACKOFF_SECONDS = 5
 MAX_RETRY_BACKOFF_SECONDS = 60
 CHECKPOINT_INTERVAL = 100
 MINIMUM_MATCH_SCORE = 0.72
-MINIMUM_CANDIDATE_SCORE = 0.70
-USER_AGENT_NAME = "PlaylistMetadataEnricher/1.0"
+USER_AGENT = "PlaylistMetadataEnricher/1.0 (baldini.dario98@gmail.com)"
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg", ".aac"}
 
 
@@ -50,7 +47,6 @@ class RunConfig:
     project_dir: Path
     minimum_match_score: float
     dry_run: bool
-    user_agent: str
 
 
 def prompt_yes_no(prompt: str, default: bool) -> bool:
@@ -85,53 +81,14 @@ def prompt_match_score(default: float) -> float:
         print("Enter a number from 0 to 1.")
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Build or resume songs_metadata.json using local audio tags and MusicBrainz."
-    )
-    parser.add_argument("--output", type=Path, help="Output metadata JSON file.")
-    parser.add_argument("--audio-dir", type=Path, help="Folder containing the audio files.")
-    parser.add_argument("--project-dir", type=Path, help="Base folder for relative audio paths.")
-    parser.add_argument("--min-score", type=float, help="Minimum MusicBrainz match score (0-1).")
-    parser.add_argument(
-        "--contact-email",
-        default=os.environ.get("MUSICBRAINZ_CONTACT_EMAIL"),
-        help="Contact email for the MusicBrainz User-Agent (or MUSICBRAINZ_CONTACT_EMAIL).",
-    )
-    parser.add_argument("--dry-run", action="store_true", help="Do not make requests or write files.")
-    parser.add_argument("--no-prompt", action="store_true", help="Use supplied values and defaults.")
-    return parser.parse_args(argv)
-
-
-def build_user_agent(contact_email: str) -> str:
-    return f"{USER_AGENT_NAME} ({contact_email.strip()})" if contact_email.strip() else USER_AGENT_NAME
-
-
-def prompt_contact_email(default: str, required: bool = True) -> str:
-    while True:
-        answer = input(f"MusicBrainz contact email [{default}]: ").strip()
-        email = answer or default
-        if email or not required:
-            return email
-        print("A contact email is required for MusicBrainz requests.")
-
-
-def choose_configuration(args: argparse.Namespace) -> RunConfig:
+def choose_configuration() -> RunConfig:
     defaults = RunConfig(
-        output_path=args.output or DEFAULT_OUTPUT,
-        audio_dir=args.audio_dir or DEFAULT_AUDIO_DIR,
-        project_dir=args.project_dir or PROJECT_DIR,
-        minimum_match_score=(
-            args.min_score if args.min_score is not None else MINIMUM_MATCH_SCORE
-        ),
-        dry_run=args.dry_run,
-        user_agent=build_user_agent(args.contact_email or ""),
+        output_path=DEFAULT_OUTPUT,
+        audio_dir=DEFAULT_AUDIO_DIR,
+        project_dir=PROJECT_DIR,
+        minimum_match_score=MINIMUM_MATCH_SCORE,
+        dry_run=False,
     )
-    if not 0 <= defaults.minimum_match_score <= 1:
-        raise ValueError("--min-score must be between 0 and 1.")
-    if args.no_prompt:
-        return defaults
-
     print("Default configuration:")
     print(f"  Existing audio folder:    {defaults.audio_dir}")
     print(f"  Output metadata:          {defaults.output_path}")
@@ -140,25 +97,15 @@ def choose_configuration(args: argparse.Namespace) -> RunConfig:
     print(f"  Dry run (no network/write): {'yes' if defaults.dry_run else 'no'}")
 
     if prompt_yes_no("Keep this configuration?", default=True):
-        if not args.contact_email and not defaults.dry_run:
-            defaults = replace(
-                defaults,
-                user_agent=build_user_agent(prompt_contact_email("", required=True)),
-            )
         return defaults
 
     print("\nEnter new values, or press Enter to keep each displayed default.")
-    dry_run = prompt_yes_no("Dry run only?", default=defaults.dry_run)
-    contact_email = args.contact_email or prompt_contact_email(
-        "", required=not dry_run
-    )
     return RunConfig(
         output_path=prompt_path("Output metadata JSON", defaults.output_path),
         audio_dir=prompt_path("Existing audio folder", defaults.audio_dir),
         project_dir=prompt_path("Base folder for relative paths", defaults.project_dir),
         minimum_match_score=prompt_match_score(defaults.minimum_match_score),
-        dry_run=dry_run,
-        user_agent=build_user_agent(contact_email),
+        dry_run=prompt_yes_no("Dry run only?", default=defaults.dry_run),
     )
 
 
@@ -283,11 +230,11 @@ def report_duplicate_songs(songs: list) -> int:
 
 
 def parse_duration(value: str | int | float | None) -> int | None:
-    """Convert tagged durations, expressed in seconds, to integer seconds."""
+    """Convert '2:42' or MusicBrainz milliseconds to seconds."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return round(value) if value >= 0 else None
+        return round(value / 1000) if value > 10000 else round(value)
     value = value.strip()
     if not value or not re.fullmatch(r"\d+:\d{1,2}(:\d{1,2})?", value):
         return None
@@ -297,15 +244,11 @@ def parse_duration(value: str | int | float | None) -> int | None:
     return parts[0] * 3600 + parts[1] * 60 + parts[2]
 
 
-def parse_musicbrainz_duration(value: str | int | float | None) -> int | None:
-    """Convert the MusicBrainz recording length, expressed in milliseconds, to seconds."""
-    if value is None:
-        return None
-    try:
-        milliseconds = float(value)
-    except (TypeError, ValueError):
-        return None
-    return round(milliseconds / 1000) if milliseconds >= 0 else None
+def parse_song_duration(value: str | int | float | None) -> int | None:
+    """Parse durations as seconds, while treating negative sentinels as unknown."""
+    if isinstance(value, (int, float)):
+        return int(round(value)) if value >= 0 else None
+    return parse_duration(value)
 
 
 def artist_names(recording: dict) -> list[str]:
@@ -329,7 +272,6 @@ def score_candidate(song: dict, candidate: dict) -> float:
     wanted_artists = [
         normalize(name) for name in artist_search_terms(song.get("artists"))
     ]
-    wanted_artists = [name for name in wanted_artists if name]
     found_artists = [normalize(name) for name in artist_names(candidate)]
     artist_score = 0.0
     if any(wanted and wanted == found for wanted in wanted_artists for found in found_artists):
@@ -347,8 +289,8 @@ def score_candidate(song: dict, candidate: dict) -> float:
         0.5 if not wanted_album else 0.0
     )
 
-    wanted_duration = parse_duration(song.get("duration"))
-    found_duration = parse_musicbrainz_duration(candidate.get("length"))
+    wanted_duration = parse_song_duration(song.get("duration"))
+    found_duration = parse_duration(candidate.get("length"))
     if wanted_duration is None or found_duration is None:
         duration_score = 0.5
     else:
@@ -357,10 +299,9 @@ def score_candidate(song: dict, candidate: dict) -> float:
             0.7 if difference <= 5 else 0.0
         )
 
-    title_weight, artist_weight = (0.40, 0.40) if wanted_artists else (0.80, 0.0)
     return round(
-        title_score * title_weight
-        + artist_score * artist_weight
+        title_score * 0.40
+        + artist_score * 0.40
         + album_score * 0.12
         + duration_score * 0.08,
         3,
@@ -490,7 +431,7 @@ def search_best_match(client: MusicBrainzClient, song: dict) -> tuple[dict | Non
             search_method = method
             if method == "title+artist":
                 best = max(candidates, key=lambda candidate: score_candidate(song, candidate))
-                if score_candidate(song, best) >= MINIMUM_CANDIDATE_SCORE:
+                if score_candidate(song, best) >= 0.70:
                     break
 
     if not candidates:
@@ -498,6 +439,23 @@ def search_best_match(client: MusicBrainzClient, song: dict) -> tuple[dict | Non
 
     best = max(candidates, key=lambda candidate: score_candidate(song, candidate))
     best_score = score_candidate(song, best)
+    if best_score < 0.70 and artists and search_method == "title+artist":
+        try:
+            results = client.search_recordings(queries[-1][0], limit=15)
+            for result in results:
+                recording_id = result.get("id")
+                if recording_id and recording_id not in seen_ids:
+                    candidates.append(result)
+                    seen_ids.add(recording_id)
+            best = max(candidates, key=lambda candidate: score_candidate(song, candidate))
+            best_score = score_candidate(song, best)
+            search_method = "title-only-fallback"
+        except Exception as exc:
+            search_had_error = True
+            print(f"  Fallback search failed: {exc}", file=sys.stderr)
+
+    if search_had_error and best_score < 0.70:
+        return best, best_score, "search-error"
     return best, best_score, search_method
 
 
@@ -509,21 +467,15 @@ def choose_release(recording: dict, preferred_album: str | None) -> dict | None:
     if preferred:
         exact = [release for release in releases if normalize(release.get("title")) == preferred]
         if exact:
-            return min(exact, key=lambda release: release.get("date") or "9999")
-    dated_official = [
-        release for release in releases
-        if release.get("date") and str(release.get("status") or "").casefold() == "official"
-    ]
-    if dated_official:
-        return min(dated_official, key=lambda release: release["date"])
-    dated = [release for release in releases if release.get("date")]
-    return min(dated, key=lambda release: release["date"]) if dated else releases[0]
+            return exact[0]
+    return next((release for release in releases if release.get("date")), releases[0])
 
 
 def enrich_song(
     client: MusicBrainzClient,
     song: dict,
     min_score: float,
+    apply_canonical: bool,
 ) -> dict:
     song = dict(song)
     song["title"] = clean_title(song.get("title"))
@@ -596,12 +548,13 @@ def enrich_song(
         "video": recording.get("video"),
     }
 
-    if canonical_title:
-        song["title"] = canonical_title
-    if canonical_artists:
-        song["artists"] = canonical_artists
-    if canonical_album:
-        song["album"] = canonical_album
+    if apply_canonical:
+        if canonical_title:
+            song["title"] = canonical_title
+        if canonical_artists:
+            song["artists"] = canonical_artists
+        if canonical_album:
+            song["album"] = canonical_album
     return song
 
 
@@ -666,10 +619,11 @@ def read_audio_metadata(path: Path) -> dict:
     artists = tag_value("artist", "artists")
     album = tag_value("album")
     duration = parse_duration(getattr(getattr(audio, "info", None), "length", None))
+    tagged_title = bool(title)
     if not title:
         title = re.sub(r"^(?:SNG)?\d+_", "", path.stem).replace("_", " ").strip()
     if not artists:
-        print(f"  No artist tag in {path.name}; searching and scoring by title only.", file=sys.stderr)
+        print(f"  No artist tag in {path.name}; MusicBrainz will search by title only.", file=sys.stderr)
     if not title:
         print(f"  No title tag or usable filename in {path.name}; skipping.", file=sys.stderr)
         return {}
@@ -677,36 +631,26 @@ def read_audio_metadata(path: Path) -> dict:
         "title": title,
         "artists": artists,
         "album": album,
+        "_tagged_title": tagged_title,
+        "_tagged_artists": bool(artists),
+        "_tagged_album": bool(album),
     }
     if duration is not None:
         song["duration"] = duration
     return song
 
 
-def load_audio_songs(
-    audio_dir: Path,
-    project_dir: Path,
-    previous: list | None = None,
-) -> list[dict]:
+def load_audio_songs(audio_dir: Path, project_dir: Path) -> list[dict]:
     if not audio_dir.is_dir():
         raise FileNotFoundError(f"Audio folder not found: {audio_dir}")
-    existing_paths = {
-        resolved_audio_path_key(song.get("audio_path"), project_dir)
-        for song in previous or []
-        if isinstance(song, dict) and song.get("audio_path")
-    }
     songs = []
-    for path in sorted(audio_dir.rglob("*")):
+    for path in audio_dir.rglob("*"):
         if not path.is_file() or path.suffix.casefold() not in AUDIO_EXTENSIONS:
-            continue
-        audio_path = recorded_audio_path(path, project_dir)
-        if resolved_audio_path_key(audio_path, project_dir) in existing_paths:
-            songs.append({"audio_path": audio_path})
             continue
         song = read_audio_metadata(path)
         if not song:
             continue
-        song["audio_path"] = audio_path
+        song["audio_path"] = recorded_audio_path(path, project_dir)
         songs.append(song)
     return songs
 
@@ -717,11 +661,38 @@ def underscored(value: object) -> str:
 
 
 def base_song_id(song: dict) -> str:
-    """Return a stable, Chroma-safe ID based on the source filename."""
+    """Return the deterministic base ID used by embed_music_effnet.py."""
+    musicbrainz = song.get("musicbrainz")
+    if not isinstance(musicbrainz, dict) or musicbrainz.get("status") != "matched":
+        musicbrainz = {}
+    else:
+        try:
+            match_score = float(musicbrainz.get("match_score") or 0)
+        except (TypeError, ValueError):
+            match_score = 0.0
+        if match_score < 0:
+            musicbrainz = {}
+
+    isrcs = musicbrainz.get("isrcs") or []
+    if isinstance(isrcs, str):
+        isrcs = [isrcs]
+    if isinstance(isrcs, list):
+        for value in isrcs:
+            isrc = underscored(value).upper() if isinstance(value, str) else ""
+            if isrc:
+                return isrc
+
+    recording_id = underscored(musicbrainz.get("recording_id"))
+    if recording_id:
+        return f"mb_{recording_id}"
+
+    youtube_id = underscored(song.get("youtube_id"))
+    if youtube_id:
+        return f"yt_{youtube_id}"
+
     audio_path = song.get("audio_path")
     if audio_path:
-        stem = underscored(PureWindowsPath(str(audio_path)).stem)
-        return f"file_{stem or 'unknown'}"
+        return f"file_{PureWindowsPath(str(audio_path)).stem}"
     return "file_unknown"
 
 
@@ -761,7 +732,7 @@ def merge_audio_songs(
     audio_songs: list[dict],
     previous: list,
     project_dir: Path,
-) -> tuple[list[dict], int, int, list[dict]]:
+) -> tuple[list[dict], int, int, list[dict], list[dict]]:
     by_audio_path: dict[str, list[int]] = {}
     for index, old_song in enumerate(previous):
         if not isinstance(old_song, dict):
@@ -772,7 +743,8 @@ def merge_audio_songs(
             by_audio_path.setdefault(key, []).append(index)
 
     merged = []
-    active_songs = []
+    new_songs = []
+    reused_songs = []
     reused_metadata = 0
     unused_previous = set(range(len(previous)))
 
@@ -790,19 +762,21 @@ def merge_audio_songs(
             old_musicbrainz = previous_song.get("musicbrainz")
             if isinstance(old_musicbrainz, dict):
                 reused_metadata += 1
+            reused_songs.append(previous_song)
             merged.append(previous_song)
-            active_songs.append(previous_song)
             continue
 
+        for field in ("_tagged_title", "_tagged_artists", "_tagged_album"):
+            song.pop(field, None)
         merged.append(song)
-        active_songs.append(song)
+        new_songs.append(song)
 
     preserved_previous = 0
     for index in sorted(unused_previous):
         merged.append(previous[index])
         preserved_previous += 1
 
-    return merged, reused_metadata, preserved_previous, active_songs
+    return merged, reused_metadata, preserved_previous, new_songs, reused_songs
 
 
 def save_json(path: Path, data: list) -> None:
@@ -832,22 +806,10 @@ def handle_termination_signal(signum, frame) -> None:
 
 def main() -> int:
     try:
-        args = parse_args()
-        config = choose_configuration(args)
+        config = choose_configuration()
     except EOFError:
         print("\nConfiguration cancelled.")
         return 130
-    except ValueError as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
-        return 2
-
-    if not config.dry_run and config.user_agent == USER_AGENT_NAME:
-        print(
-            "MusicBrainz requests require a contact email. Pass --contact-email "
-            "or set MUSICBRAINZ_CONTACT_EMAIL.",
-            file=sys.stderr,
-        )
-        return 2
 
     output_path = config.output_path.resolve()
     audio_dir = config.audio_dir.resolve()
@@ -859,29 +821,23 @@ def main() -> int:
             print(f"  Loaded {len(previous)} entries from {output_path}")
         else:
             print(f"  No existing output at {output_path}; starting with an empty metadata set.")
-        audio_songs = load_audio_songs(audio_dir, project_dir, previous)
+        audio_songs = load_audio_songs(audio_dir, project_dir)
     except (OSError, ValueError, ImportError) as exc:
-        if isinstance(exc, ImportError):
-            print(
-                "The 'mutagen' package is required to read audio tags. "
-                "Install it with: python -m pip install mutagen",
-                file=sys.stderr,
-            )
-        else:
-            print(f"Could not load metadata or audio files: {exc}", file=sys.stderr)
+        print(f"Could not load metadata or audio files: {exc}", file=sys.stderr)
         return 2
 
-    print(f"  Found {len(audio_songs)} supported audio file(s) in {audio_dir}.")
+    print(f"  Read tags from {len(audio_songs)} supported audio file(s) in {audio_dir}.")
     print("[2/4] Matching files to existing metadata and reusing MusicBrainz results...")
-    data, reused_metadata, preserved_previous, active_songs = merge_audio_songs(
+    data, reused_metadata, preserved_previous, new_songs, reused_songs = merge_audio_songs(
         audio_songs,
         previous,
         project_dir,
     )
-    assign_song_ids(data, active_songs)
+    assign_song_ids(data, new_songs)        # only new songs get ids
+    current = new_songs + reused_songs
     pending = sum(
         not is_completed(song)
-        for song in active_songs
+        for song in current
     )
     ready = sum(
         isinstance(song, dict) and bool(song.get("audio_path"))
@@ -902,14 +858,14 @@ def main() -> int:
     print(f"[3/4] Enriching {pending} song(s) with MusicBrainz data...")
     if pending == 0:
         print("  All songs already have completed MusicBrainz processing.")
-    client = MusicBrainzClient(config.user_agent)
+    client = MusicBrainzClient(USER_AGENT)
     processed_since_save = 0
     processed = 0
-    active_song_ids = {id(song) for song in active_songs}
+    new_song_ids = {id(song) for song in current}
     try:
         signal.signal(signal.SIGTERM, handle_termination_signal)
         for index, song in enumerate(data, start=1):
-            if not isinstance(song, dict) or id(song) not in active_song_ids or is_completed(song):
+            if not isinstance(song, dict) or id(song) not in new_song_ids or is_completed(song):
                 continue
             processed += 1
             label = f"{song.get('artists', 'Unknown artist')} — {song.get('title', 'Unknown title')}"
@@ -918,6 +874,7 @@ def main() -> int:
                 client,
                 song,
                 config.minimum_match_score,
+                True,
             )
             result = data[index - 1].get("musicbrainz", {})
             if result.get("status") == "matched":

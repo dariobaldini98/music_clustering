@@ -176,7 +176,8 @@ MusicBrainz User-Agent, unless supplied on the command line or in `MUSICBRAINZ_C
 4. **Enriches new and unfinished songs with MusicBrainz**: it searches by title + artist (the full artist credit first,
    then each `|`-separated artist), scores the candidates, and if the best one reaches the minimum match
    score it looks up the recording and stores the canonical title, artists, album, release date, ISRCs and
-   links. The canonical title / artists / album replace the tag values.
+   links. The canonical title / artists / album replace the tag values. If no recording is found, the entry gets a 
+   top-level `release_date` of `null` (an existing value is kept).
 5. **Reports possible duplicates** (same MusicBrainz recording, ISRC, YouTube id, audio path, or same
    title + artist). Nothing is ever removed automatically.
 6. **Saves** `songs_metadata.json` (atomically), every 100 songs and at the end. `Ctrl+C` or `SIGTERM`
@@ -265,9 +266,28 @@ used when available.
 }
 ```
 
+A song that MusicBrainz could not match gets a top-level `release_date` instead:
+
+```json
+{
+  "song_id": "file_Artist_Title",
+  "audio_path": "songs/Artist - Title.mp3",
+  "title": "Title",
+  "artists": "Artist",
+  "album": "Album",
+  "duration": 215,
+  "release_date": null,
+  "musicbrainz": {"status": "not-found", "processing_complete": true, "match_score": 0.0, "search_method": "not-found"}
+}
+```
+
+`release_date` is stored in the `musicbrainz` block for matched songs (the chosen release’s date, else the recording’s 
+first-release date; it can be partial, like `2019` or `2019-05`). When no MusicBrainz recording is found, the script writes 
+a top-level `release_date`: `null`, or the value already present in the entry. You can type a date there by hand.
+
 `musicbrainz.status` is `matched`, `not-found`, `search-error` (network problem while searching) or
 `lookup-error`. Entries that only have the first fields (no `musicbrainz` block) are valid too; the
-embedding script then falls back to the plain `title` / `artists` / `album`.
+embedding script then falls back to the plain `title` / `artists` / `album` / `release_date`.
 
 ### Things to know
 
@@ -281,6 +301,8 @@ embedding script then falls back to the plain `title` / `artists` / `album`.
 - A file with **no artist tag** is searched and scored by title, with the artist weight reassigned to title;
   adding accurate artist tags can still improve match confidence.
 - Moving or renaming an audio file makes it a new song with a new `song_id`; the old entry is kept.
+- To give an unmatched song a release date, set the top-level `release_date` in `songs_metadata.json` by hand. 
+  The date is not touched by later runs, because completed not-found entries are not re-processed.
 
 ---
 
