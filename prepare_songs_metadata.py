@@ -560,6 +560,7 @@ def enrich_song(
             "match_score": match_score,
             "search_method": method,
         }
+        song["release_date"] = song.get("release_date")   # keeps an existing value, otherwise null
         return song
 
     release = choose_release(recording, song.get("album"))

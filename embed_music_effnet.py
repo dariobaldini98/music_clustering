@@ -355,7 +355,7 @@ def static_metadata(song):
         "album": str(mb.get("album") or song.get("album") or ""),
         "url": str(song.get("url") or ""),
         "isrc": song_isrc(song),
-        "release_date": str(mb.get("release_date") or ""),
+        "release_date": str(mb.get("release_date") or song.get("release_date") or ""),
         "musicbrainz_recording_id": str(mb.get("recording_id") or ""),
         "musicbrainz_recording_url": str(mb.get("recording_url") or ""),
     }
